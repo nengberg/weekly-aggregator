@@ -55,8 +55,12 @@ func callback(w http.ResponseWriter, r *http.Request) {
 		} else {
 			for _, playlist := range playlists.Items {
 				if playlist.Name == "Discover Weekly" {
-					tracks, _ := client.GetTracks(playlist.GetID())
-					client.AddTracksToPlaylist(listToAddTracksTo, tracks)
+					id, err := playlist.GetID()
+					if err != nil {
+						log.Fatal(err)
+					}
+					tracksResponse, _ := client.GetTracks(id, 0)
+					client.AddTracksToPlaylist(listToAddTracksTo, tracksResponse.Items)
 				}
 			}
 		}

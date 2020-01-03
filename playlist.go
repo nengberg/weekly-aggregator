@@ -21,9 +21,13 @@ type Playlist struct {
 }
 
 //GetID returns an ID for a Playlist
-func (p Playlist) GetID() string {
+func (p Playlist) GetID() (string, error) {
 	uriSplitted := strings.Split(p.URI, ":")
-	return uriSplitted[2]
+
+	if len(uriSplitted) < 3 || uriSplitted[2] == "" {
+		return "", fmt.Errorf("Invalid URI format %v", p.URI)
+	}
+	return uriSplitted[2], nil
 }
 
 //GetPlaylists returns your playlists
@@ -46,14 +50,36 @@ func (c *Client) GetPlaylists() (Playlists, error) {
 func (c *Client) AddTracksToPlaylist(playlistID string, items []*Item) {
 	playlistTracksURL := c.BaseURL + "playlists/" + playlistID + "/tracks"
 	log.Printf("Adding tracks to playlist with ID %s\n", playlistTracksURL)
-	tracksAlreadyInList, _ := c.GetTracks(playlistID)
+	tracksAlreadyInList := getTracks(c, playlistID)
 	tracksToAdd := findDeltas(tracksAlreadyInList, items)
-	data, _ := createPostBody(tracksToAdd)
-	res, err := c.HTTP.Post(playlistTracksURL, "application/json", bytes.NewReader(data))
-	if err != nil {
-		log.Fatalf("An error occurred when adding tracks %s\n", err.Error())
+	if len(tracksToAdd) != 0 {
+		data, _ := createPostBody(tracksToAdd)
+		res, err := c.HTTP.Post(playlistTracksURL, "application/json", bytes.NewReader(data))
+		if err != nil {
+			log.Fatalf("An error occurred when adding tracks %s\n", err.Error())
+		}
+		defer res.Body.Close()
+	} else {
+		log.Print("No tracks to add!")
 	}
-	defer res.Body.Close()
+}
+
+func getTracks(c *Client, playlistID string) []*Item {
+	tracksResponse, _ := c.GetTracks(playlistID, 0)
+	tracks := tracksResponse.Items
+	total := tracksResponse.Total
+	fetched := 100
+	for {
+		if fetched >= total {
+			break
+		}
+
+		tr, _ := c.GetTracks(playlistID, fetched)
+		tracks = append(tracks, tr.Items...)
+		fetched += 100
+	}
+	log.Printf("Length: %d", len(tracks))
+	return tracks
 }
 
 func findDeltas(tracksAlreadyInList []*Item, tracksToAdd []*Item) []*Item {

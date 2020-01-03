@@ -19,7 +19,7 @@ func NewAuth() Auth {
 	config := &oauth2.Config{
 		ClientID:     os.Getenv("SPOTIFY_CLIENT_ID"),
 		ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
-		RedirectURL:  "http://localhost:8080/callback",
+		RedirectURL:  os.Getenv("SPOTIFY_REDIRECT_URL"),
 		Scopes:       []string{"user-read-private", "playlist-modify-public"},
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://accounts.spotify.com/authorize",
@@ -31,12 +31,12 @@ func NewAuth() Auth {
 	}
 }
 
-// AuthCodeURL ..
+// AuthCodeURL returns the URL where you authorize
 func (a *Auth) AuthCodeURL(state string) string {
 	return a.Config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
-// GetToken bla
+// GetToken fetches a token from the auth code present
 func (a *Auth) GetToken(r *http.Request) (*oauth2.Token, error) {
 	token, err := a.Config.Exchange(context.Background(), r.FormValue("code"))
 	if err != nil {
