@@ -1,4 +1,5 @@
 language: go
 
 script:
+  - make install
   - make test
