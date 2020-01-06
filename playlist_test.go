@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -64,16 +66,7 @@ func TestGetPlaylists(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(jsonPlaylists))
 	}
-
-	server := httptest.NewServer(http.HandlerFunc(handler))
-	cli := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
-				return net.Dial(network, server.Listener.Addr().String())
-			},
-		},
-	}
-	client.HTTP = cli
+	client.HTTP = createNewHTTPServerWithClient(handler)
 
 	result, err := client.GetPlaylists()
 
@@ -93,16 +86,7 @@ func TestGetPlaylistsError(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
-
-	server := httptest.NewServer(http.HandlerFunc(handler))
-	cli := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
-				return net.Dial(network, server.Listener.Addr().String())
-			},
-		},
-	}
-	client.HTTP = cli
+	client.HTTP = createNewHTTPServerWithClient(handler)
 
 	result, err := client.GetPlaylists()
 
@@ -116,30 +100,25 @@ func TestAddTracksToPlaylist_TracksAlreadyInPlaylist_DoesntPostToPlaylists(t *te
 	client := auth.NewClient(token)
 	client.BaseURL = "http://abc.se/"
 	playlistID := "123"
+	tracksResponse := TracksResponse{Items: []*Item{&Item{Track: Track{Name: "abc", URI: "t:1:2"}}}}
+
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.String() == "/playlists/"+playlistID+"/tracks?offset=0" {
-			tracksJSON, _ := json.Marshal(tracks)
+			tracksJSON, _ := json.Marshal(tracksResponse)
 
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(tracksJSON))
 		}
 
 		assert.Equal(t, "/playlists/"+playlistID+"/tracks?offset=0", r.URL.String())
+		assert.Equal(t, "GET", r.Method)
 		assert.NotEqual(t, "/playlists/"+playlistID+"/tracks", r.URL.String())
-	}
+		assert.NotEqual(t, "POST", r.Method)
 
-	server := httptest.NewServer(http.HandlerFunc(handler))
-	cli := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
-				return net.Dial(network, server.Listener.Addr().String())
-			},
-		},
 	}
-	client.HTTP = cli
+	client.HTTP = createNewHTTPServerWithClient(handler)
 
 	client.AddTracksToPlaylist(playlistID, tracks.Items)
-
 }
 
 func TestAddTracksToPlaylist_TracksNotInPlaylist_PostToPlaylists(t *testing.T) {
@@ -148,30 +127,95 @@ func TestAddTracksToPlaylist_TracksNotInPlaylist_PostToPlaylists(t *testing.T) {
 	client := auth.NewClient(token)
 	client.BaseURL = "http://abc.se/"
 	playlistID := "123"
+	tracks := TracksResponse{Items: []*Item{&Item{Track: Track{Name: "abc", URI: "t:1:2"}}}}
+	tracksToAdd := []*Item{
+		&Item{
+			Track: Track{
+				Name: "def",
+				URI:  "t:3:4",
+			},
+		},
+		&Item{
+			Track: Track{
+				Name: "ghi",
+				URI:  "t:8:5",
+			},
+		},
+	}
+	tracksToAddResponse := TracksResponse{Items: tracksToAdd}
+
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.String() == "/playlists/"+playlistID+"/tracks?offset=0" {
+		if r.URL.String() == "/playlists/"+playlistID+"/tracks?offset=0" && r.Method == "GET" {
 			tracksJSON, _ := json.Marshal(tracks)
 
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(tracksJSON))
 		}
 
-		if r.URL.String() == "/playlists/"+playlistID+"/tracks?offset=0" {
-			//Test if post body is correct
+		if r.URL.String() == "/playlists/"+playlistID+"/tracks" && r.Method == "POST" {
+			responseData, err := ioutil.ReadAll(r.Body)
+			assert.NoError(t, err)
+			request := make(map[string][]string)
+			err = json.Unmarshal(responseData, &request)
+			uris := request["uris"]
+			assert.NoError(t, err)
+			assert.Equal(t, 2, len(uris))
+			assert.Equal(t, tracksToAddResponse.Items[0].Track.URI, uris[0])
+			assert.Equal(t, tracksToAddResponse.Items[1].Track.URI, uris[1])
 		}
 	}
+	client.HTTP = createNewHTTPServerWithClient(handler)
 
+	client.AddTracksToPlaylist(playlistID, tracksToAddResponse.Items)
+}
+
+func TestAddTracksToPlaylist_AllTracksInList_MoreTracksThanDefaultPaging_DoesntPostToPlaylists(t *testing.T) {
+	auth := NewAuth()
+	token := &oauth2.Token{}
+	client := auth.NewClient(token)
+	client.BaseURL = "http://abc.se/"
+	playlistID := "123"
+	total := 101
+	tracks := makeTracks(total)
+	tracksResponse := TracksResponse{Items: tracks, Total: total}
+	var urlsCalled []string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			tracksJSON, _ := json.Marshal(tracksResponse)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(tracksJSON))
+		}
+		urlsCalled = append(urlsCalled, r.URL.String())
+
+		assert.NotEqual(t, "/playlists/"+playlistID+"/tracks", r.URL.String())
+		assert.NotEqual(t, "POST", r.Method)
+	}
+	client.HTTP = createNewHTTPServerWithClient(handler)
+
+	client.AddTracksToPlaylist(playlistID, tracksResponse.Items)
+
+	assert.Equal(t, 2, len(urlsCalled))
+	assert.Equal(t, "/playlists/"+playlistID+"/tracks?offset=0", urlsCalled[0])
+	assert.Equal(t, "/playlists/"+playlistID+"/tracks?offset=100", urlsCalled[1])
+}
+
+func makeTracks(total int) []*Item {
+	items := make([]*Item, total)
+	for i := 0; i < total; i++ {
+		track := &Item{Track: Track{Name: fmt.Sprintf("track-%d", i), URI: fmt.Sprintf("uri-%d", i)}}
+		items[i] = track
+	}
+	return items
+}
+
+func createNewHTTPServerWithClient(handler func(w http.ResponseWriter, r *http.Request)) *http.Client {
 	server := httptest.NewServer(http.HandlerFunc(handler))
-	cli := &http.Client{
+	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
 				return net.Dial(network, server.Listener.Addr().String())
 			},
 		},
 	}
-	client.HTTP = cli
-	var tracks = TracksResponse{Items: []*Item{&Item{Track: Track{Name: "def", URI: "t:3:4"}}}}
-
-	client.AddTracksToPlaylist(playlistID, tracks.Items)
-
 }
